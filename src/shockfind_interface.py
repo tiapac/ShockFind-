@@ -349,15 +349,21 @@ class shock_finder(core):
         self.computed_shocks = [Fshocks, Sshocks, Bohshocks, Fpointers, Spointers]
         return self.computed_shocks, self.header
     
-    def save_results(self, name=None):
+    def save_results(self, path=None, name=None):
         if name is None: name = self.name 
+        if path is not None: path = "./"
         print("Saving results to",name )
-        with open("%s_result.pk"%name, 'wb') as handle:
+        with open("%s/%s_result.pk"%(path,name), 'wb') as handle:
                   pickle.dump([self.shocks,self.header], handle)
         return
-    def load_results(self, name = None):
+    @property
+    def results(self):
+        return   self.shocks,self.header
+    def load_results(self,path=None, name=None):
         if name is None: name = self.name 
-        with open("%s_result.pk"%name, 'rb') as handle:
+        if path is not None: path = "./"
+
+        with open("%s/%s_result.pk"%(path,name), 'rb') as handle:
             self.shocks,self.header = pickle.load( handle)
         self.shocks_data()
         return self.shocks,self.header
@@ -416,10 +422,11 @@ class shock_finder(core):
         condboh = ss[6]==0 
         ax.hist(ss[ind][condF],  color="midnightblue", label="Fast n = %5d"%len(ss[ind][condF])  ,**kwargs )
         ax.hist(ss[ind][condS],  color="red",          label="Slow n = %5d"%len(ss[ind][condS])  ,**kwargs )
-        ax.hist(ss[ind][condboh],color="green",        label="???  n = %5d"%len(ss[ind][condboh]),**kwargs )
+        #ax.hist(ss[ind][condboh],color="green",        label="???  n = %5d"%len(ss[ind][condboh]),**kwargs )
         ax.set_xlabel(header[1][ind])
         ax.legend()
         return ax, fig 
+    
     @staticmethod    
     def divergence(V, dx):
         vx,vy,vz = V

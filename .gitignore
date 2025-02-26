@@ -1,0 +1,14 @@
+__pycache__/
+pickled/
+
+data/
+stuff/
+pickled/
+
+
+
+
+
+*.pk
+*.png
+*.PNG

@@ -1,10 +1,21 @@
 import pickle
 import gc
 import analysis_playground.analysis_tools as an 
-from shockfind_interface import shock_finder
+import  codes.shockfinder as css
+shock_finder = css.shock_finder
 import numpy as np
 import matplotlib.pyplot as plt
 import os
+
+level= 8
+analysis_name = "SNR_HB"
+analysis_name += "lvl_%02d"%level
+outnumb = 12
+
+directory = "data/%s_%05d"%(analysis_name,outnumb) + "/"
+ncpus = 16
+rescale=0
+load = False
 if __name__=="__main__":
     names=[
             "velocity_x",
@@ -16,78 +27,81 @@ if __name__=="__main__":
             "pressure",
             "density",
              "dx"]
-    level= 7
-    analysis_name = "SNR_MHB"
-    directory = "data/%s"%analysis_name + "/"
-    try:
-        os.makedirs(directory)
-    except Exception as e: 
-        print(e)
-        pass 
-    ### collecting data from simulations
-    if 0:    
     
-        #ds = an.analyse(outpath="/home/mattia/codes/CR/cr_particles_multip_MESS", outnumb=285)
-        ds = an.analyse(outpath="/work/pacicco/simulations/SNR_paper/SNRs_uniform/SN_uniform_MB", outnumb=21)
-
-        dx   = (ds.width/2**level)[0].in_cgs().d
-        dens, cube = ds.get_cube(level=level, field="density", ghost=1)
-        if level > 8:
-            directory2 = directory+"many_lvl_%i/"%level
+   
+    ### collecting data from simulations
+    def loadytData():  
+        def fromScratch():
             try:
-                os.makedirs(directory2)
+                os.makedirs(directory)
             except Exception as e: 
                 print(e)
                 pass 
-            for name in names:
-                with open(directory2+"%s.pickle"%name, 'wb') as handle:
-                    if name=="dx":
-                        c=pickle.dump(dx, handle)      
-                    else:
-                        data,cube=ds.get_cube(level=9, field=name, ghost=1)
-                        c=pickle.dump(data.in_cgs().d, handle)
-                        del data,cube,c
-                        gc.collect()
-                        
-        else:
-            vx  =  cube["gas",  "velocity_x"].in_cgs().d
-            vy  =  cube["gas",  "velocity_y"].in_cgs().d
-            vz  =  cube["gas",  "velocity_z"].in_cgs().d
-            Bx  =  cube["gas",  "magnetic_field_x"].in_cgs().d
-            By  =  cube["gas",  "magnetic_field_y"].in_cgs().d
-            Bz  =  cube["gas",  "magnetic_field_z"].in_cgs().d
-            P   =  cube["gas",  "pressure"        ].in_cgs().d
-            rho =  cube["gas",  "density"].in_cgs().d
-            datas = vx,vy,vz,Bx,By,Bz,P,rho,dx
-            #os.mkdir("pickled_data_from_SNR")
-            with open(directory+"total_%i.pickle"%level, 'wb') as handle:
-                  pickle.dump(datas, handle)
-        quit()
-    
-    if level > 8:
-        a=[]        
-        for name in names:
-            directory2 = directory+"many_lvl_%i"%level
-            with open(directory2+"%s.pickle"%name, 'rb') as handle:
-                    a.append(pickle.load( handle))
-    else:
-        with open(directory+"total_%i.pickle"%level, 'rb') as handle:
-            a=pickle.load( handle)
-    
-    vx, vy, vz, Bx, By, Bz, P, rho, dx = a
-    del a
-    
-    print("Data loaded")
+            print("Computing from scratch")
+            #ds = an.analyse(outpath="/home/mattia/codes/CR/cr_particles_multip_MESS", outnumb=285)
+            ds = an.analyse(outpath="/work/pacicco/simulations/SNR_paper/SNRs_uniform/SN_uniform_MB", outnumb=outnumb)
+
+            dx   = (ds.width/2**level)[0].in_cgs().d
+            dens, cube = ds.get_cube(level=level, field="density", ghost=1)
+            if level > 8:
+                directory2 = directory+"many_lvl_%i/"%level
+                try:
+                    os.makedirs(directory2)
+                except Exception as e: 
+                    print(e)
+                    pass 
+                for name in names:
+                    with open(directory2+"%s.pickle"%name, 'wb') as handle:
+                        if name=="dx":
+                            c=pickle.dump(dx, handle)      
+                        else:
+                            data,cube=ds.get_cube(level=9, field=name, ghost=1)
+                            c=pickle.dump(data.in_cgs().d, handle)
+                            del data,cube,c
+                            gc.collect()                       
+            else:
+                vx  =  cube["gas",  "velocity_x"].in_cgs().d
+                vy  =  cube["gas",  "velocity_y"].in_cgs().d
+                vz  =  cube["gas",  "velocity_z"].in_cgs().d
+                Bx  =  cube["gas",  "magnetic_field_x"].in_cgs().d
+                By  =  cube["gas",  "magnetic_field_y"].in_cgs().d
+                Bz  =  cube["gas",  "magnetic_field_z"].in_cgs().d
+                P   =  cube["gas",  "pressure"        ].in_cgs().d
+                rho =  cube["gas",  "density"].in_cgs().d
+                datas = [vx,vy,vz,Bx,By,Bz,P,rho,dx]
+                #os.mkdir("pickled_data_from_SNR")
+                with open(directory+"total_%i.pickle"%level, 'wb') as handle:
+                    pickle.dump(datas, handle)
+                return datas
+        try:
+            if level > 8:
+                a=[]        
+                for name in names:
+                    directory2 = directory+"many_lvl_%i"%level
+                    with open(directory2+"%s.pickle"%name, 'rb') as handle:
+                            a.append(pickle.load( handle))
+            else:
+                with open(directory+"total_%i.pickle"%level, 'rb') as handle:
+                    a=pickle.load( handle)
+            
+            vx, vy, vz, Bx, By, Bz, P, rho, dx = a
+            del a
+            print("Data loaded")
+            return [vx, vy, vz, Bx, By, Bz, P, rho, dx]
+        except Exception as e:
+            return fromScratch()    
+        
     
 #########################################################################################################
     
-    shocksfinder=shock_finder()
-    load = True
+    shocksfinder=shock_finder(name=analysis_name)
+    
     if load:
-        shocksfinder.load_results()
-        
+        shocksfinder.load_results(path=directory, name=analysis_name)
+  
         
     else:
+        vx, vy, vz, Bx, By, Bz, P, rho, dx =  loadytData()  
         # load data to run analysis 
         shocksfinder.load_data(rho,       # denisty
                         [vx,vy,vz], # velocity field
@@ -109,22 +123,28 @@ if __name__=="__main__":
         # plot the locations of the shock candidates 
         #shocksfinder.plot_candidates()
         
-        plt.show()
+        #plt.show()
         
         # run analysis of te shock candidates
-        shocksfinder.analyse_candidates(quiet=False)
+        shocksfinder.analyse_candidates(quiet=False, ncpus = ncpus, rescale=rescale)
         # collect resulting data, only shock position and firectional information  
         shocksfinder.shocks_data()
+        
         # save the results to file for later inspection 
-        shocksfinder.save_results()
+        shocksfinder.save_results(path=directory, name=analysis_name)
     #finally:
     # make a 3D plot with all the shocks found
     #shocksfinder.plot3D(types="sf", alpha=0.1, ss=1)
     # make histograms of the various shock quantities
-    #shocksfinder.histograms(9, bins=50, log=True, alpha=0.5)
+   
+    names = {i:name for i,name in enumerate(shocksfinder.header[1])}
+    #print(names)
+    shared = dict(bins=15 , log=True , alpha=0.8, histtype="step", lw=2, density=True)
+    ax, fig = shocksfinder.histograms(9, **shared )
+    shocksfinder.histograms(10, ax = ax, fig=fig, linestyle="--", **shared )
     #print("done")
-    shocksfinder_results= shocksfinder.load_results()
-    
+    shocksfinder_results= shocksfinder.results#shocksfinder.load_results(path=directory, name=analysis_name)
+
     shocks = shocksfinder_results[0]#.shocks
     cond   = np.logical_and(
                             np.logical_and(

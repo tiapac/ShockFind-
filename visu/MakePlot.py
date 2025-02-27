@@ -149,7 +149,22 @@ def add_a_conditioned_grid(sel_cond         = True,
     actor_list.append(actor)
     print("Done.")
     return
+
+class DiffuseSlider:
+    def __init__(self, actor,plotter):#,**keywargs):
+        self.output  = actor  # Expected PyVista mesh type
+        self.plotter = plotter
     
+    def __call__(self, value):
+        self.output.GetProperty().SetDiffuse(value)
+        
+        return
+
+    def update(self):
+        # This is where you call your simulation
+        self.plotter.render()
+        return  
+          
     
 class apply_allD:
     def __init__(self, actors,plotter):#,**keywargs):
@@ -168,21 +183,7 @@ class apply_allD:
         self.plotter.render()
         return
 
-class DiffuseSlider:
-    def __init__(self, actor,plotter):#,**keywargs):
-        self.output  = actor  # Expected PyVista mesh type
-        self.plotter = plotter
-    
-    def __call__(self, value):
-        self.output.GetProperty().SetDiffuse(value)
-        #self.update()
-        return
 
-    def update(self):
-        # This is where you call your simulation
-        self.plotter.render()
-        return  
-      
 class apply_allS:
     """Not working 
     """
@@ -247,9 +248,9 @@ if __name__ == "__main__":
     "11 - rho0: preshock density in g/cm^3\n", 
     "12 - B0: preshock magnetic field strength in microG\n", 
     "13 - pmag_ratio: ratio of postshock to preshock magnetic pressure\n")
-    cond   = np.logical_and(np.logical_and( shocks[6] > 0,    shocks[15]==0),    shocks[14]==1)
-    
-
+    cond   =True # np.logical_and(np.logical_and( shocks[6] > 0,    shocks[15]==0),    shocks[14]==1)
+    cond2 = np.logical_and( shocks[1] >120, shocks[1] <128 )
+    cond = np.logical_and(cond, cond2)
 
     plotter = pv.Plotter()
     add_a_conditioned_grid(sel_cond = shocks[6]==12, title = "FS", color = "blue",posy = size*2+size//10, unicolor = "blue" ,inistate = True, add_vector_field=True)
@@ -266,7 +267,7 @@ if __name__ == "__main__":
                             add_vector_field = False)
         pos+=1
 
-    
+    #plotter.show()    
     plotter.set_background("black")
     plotter.show_bounds(    color     = "white",
                             bold      = False,

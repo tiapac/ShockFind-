@@ -2,9 +2,22 @@ import numpy as np
 import matplotlib.pyplot as plt
 from .shockfindCore.shockfind import core
 import pickle
-import utils.utils as utils
+from ..utils.utils import utils
+import logging
 import time
 import gc
+
+# Library logger — never add handlers here; callers configure them via setup_logger.
+_log = logging.getLogger("ShockFind")
+
+def _mpi_rank_size():
+    """Return (rank, size) if mpi4py is available and MPI is active, else (0, 1)."""
+    try:
+        from mpi4py import MPI
+        comm = MPI.COMM_WORLD
+        return comm.Get_rank(), comm.Get_size()
+    except ImportError:
+        return 0, 1
  
 
 
@@ -238,22 +251,30 @@ class shock_finder(core):
         return self.convergenge_threshold, self.nablaRho_threshold
 
     def find_candidates(self,use_gradTRho = False, dx = None, kB = 1.3806490e-16, mu_mol = 1.2195e0, mh = 1.6605390e-24):
-        """This function determines shock candidates based on the threshold setter in 
+        """This function determines shock candidates based on the threshold setter in
             set_threshold.
 
         Returns:
             list: list of the shock candidates index-wise locations.
         """
+        # Worker MPI ranks skip this entirely — their candidates are never used.
+        # Only rank 0's candidates are scattered by characterise_shocks_mpi.
+        _rank, _size = _mpi_rank_size()
+        if _size > 1 and _rank != 0:
+            _log.debug(f"[rank {_rank}/{_size}] skipping find_candidates (worker rank — will receive candidates from rank 0)")
+            self.shock_candidates = []
+            return self.shock_candidates
+
         self.shock_candidates = []
         nablaRho_mag = (self.nablaRho[0]**2 + self.nablaRho[1]**2 + self.nablaRho[2]**2)**0.5
         if use_gradTRho:
             if self.P is None: raise Exception("Cannot use this the gradT-gradRho critiria without the pressure.")
-            if dx is None: 
+            if dx is None:
                 raise Exception("If gradTrho  is True, \
                 you must input a dx to compute the pressure gradient runtime.")
             #nablaP=np.gradient(self.P, dx,edge_order=2)
             #nablaP_mag= (nablaP[0]**2 + nablaP[1]**2+nablaP[2]**2)**0.5
-            print("computing dot product between temperature and density gradients... may require a bit.")
+            _log.info("computing dot product between temperature and density gradients...")
             T = (mu_mol * mh / kB) * self.P / self.Rho
             gradT    = np.gradient(T, dx,edge_order=2)
             gradTrho = gradT[0]*self.nablaRho[0]+gradT[1]*self.nablaRho[1]+gradT[2]*self.nablaRho[2]      
@@ -288,32 +309,114 @@ class shock_finder(core):
         del nablaRho_mag
         if use_gradTRho: del  T, gradT, gradTrho, cs, bmag, ca, vmag, mach
         gc.collect()
-        return self.shock_candidates 
+        _log.info(f"found {len(self.shock_candidates)} shock candidates")
+        return self.shock_candidates
           
-    def analyse_candidates(self,quiet = False, ncpus=16, rescale=0):
-        """This funtion analyse the candidates shock cells and
-            finds characterise the type of shocks present in the cells, if any.
+    def analyse_candidates(self, quiet=False, ncpus=None, rescale=0, use_cpp=True):
+        """Characterise all shock candidate cells.
 
         Returns:
-            list: return the full set of information about the shoks and a header for the data.
+            (shocks, header): 17-array list and column-name tuple.
+            When launched with mpirun, worker ranks exit here; only rank 0 returns.
+
+        Raises:
+            RuntimeError: if the Python multiprocessing backend is requested while
+                MPI is active (mpirun).  These two parallelism models are mutually
+                exclusive and combining them produces undefined behaviour.
         """
-        for i in range(0,rescale):
+        import warnings as _warnings
+
+        for i in range(0, rescale):
             del self.shock_candidates[1::2]
-          
-        t0=time.time()
-        charact_funtion = self.characterise_shocks_para
-        self.shocks, self.header = charact_funtion( self.shock_candidates,
-                                                    self.Rho,
-                                                    self.P,
-                                                    self.B,
-                                                    self.V,
-                                                    self.divV,
-                                                    self.nablaRho,
-                                                    self.extra,
-                                                    quiet = quiet,
-                                                    ID='', ncpus=ncpus)
-        #print(self.shocks)
-        print("took ",time.time() - t0, "seconds")
+
+        _rank, _size = _mpi_rank_size()
+        _use_mpi = _size > 1
+        n_cands  = len(self.shock_candidates)
+        t0 = time.time()
+
+        # ── Hard guard: ncpus is only meaningful for the Python backend ───────────
+        if ncpus is not None and use_cpp:
+            raise RuntimeError(
+                f"ncpus={ncpus} is only used by the (deprecated) Python multiprocessing "
+                f"backend and has no effect when use_cpp=True. "
+                f"Remove the ncpus argument or set use_cpp=False."
+            )
+
+        # ── Hard guard: Python multiprocessing + MPI is never valid ──────────────
+        if not use_cpp and _use_mpi:
+            raise RuntimeError(
+                f"Cannot use the Python multiprocessing backend (use_cpp=False) "
+                f"while MPI is active ({_size} ranks detected). "
+                f"These two parallelism models are mutually exclusive. "
+                f"Either remove mpirun or pass use_cpp=True."
+            )
+
+        if use_cpp:
+            try:
+                from .shockfindCore_cpp import shockfindCore_cpp as _cpp
+
+                if _use_mpi:
+                    if _rank == 0:
+                        _log.info(f"C++ MPI backend — dispatching {n_cands} candidates across {_size} ranks")
+                    else:
+                        _log.debug(f"[rank {_rank}/{_size}] worker ready, waiting for candidates from rank 0")
+                else:
+                    _log.info(f"C++ serial backend — {n_cands} candidates")
+
+                data, header = _cpp.characterise_shocks(
+                    self.shock_candidates,
+                    self.Rho,
+                    self.P,
+                    self.B,
+                    self.V,
+                    self.divV,
+                    self.nablaRho,
+                    self.extra,
+                    use_mpi=_use_mpi,
+                    quiet=quiet,
+                )
+
+                # Worker ranks: work is done, exit so rank 0 continues alone.
+                if _use_mpi and _rank != 0:
+                    _log.debug(f"[rank {_rank}/{_size}] analysis contribution complete — exiting")
+                    import sys as _sys
+                    _sys.exit(0)
+
+                elapsed = time.time() - t0
+                backend = f"C++ MPI ({_size} ranks)" if _use_mpi else "C++ serial"
+                _log.info(f"analysis complete — {n_cands} candidates in {elapsed:.2f}s [{backend}]")
+
+                self.shocks = data
+                self.header = header
+                return self.shocks, self.header
+
+            except ImportError:
+                _log.warning("C++ backend not built — falling back to Python multiprocessing")
+
+        # ── Python multiprocessing fallback ───────────────────────────────────────
+        _warnings.warn(
+            "The Python multiprocessing backend (use_cpp=False / C++ extension not found) "
+            "is deprecated and will be removed in a future release. "
+            "Build the C++ extension (see CLAUDE.md) and use use_cpp=True.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        import os as _os
+        _ncpus = ncpus if ncpus is not None else _os.cpu_count() or 1
+        _log.info(f"Python multiprocessing backend — {n_cands} candidates on {_ncpus} CPUs")
+        self.shocks, self.header = self.characterise_shocks_para(
+            self.shock_candidates,
+            self.Rho,
+            self.P,
+            self.B,
+            self.V,
+            self.divV,
+            self.nablaRho,
+            self.extra,
+            quiet=quiet,
+            ID='', ncpus=_ncpus)
+        elapsed = time.time() - t0
+        _log.info(f"analysis complete — {n_cands} candidates in {elapsed:.2f}s [Python multiprocessing]")
         return self.shocks, self.header
     
     def shocks_data(self, dx = 1.0):

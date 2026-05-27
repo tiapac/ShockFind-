@@ -230,8 +230,13 @@ class shock_finder(core):
         Returns:
             list: Return the values of the thresholds, convergenge_threshold, nablaRho_threshold and save them.
         """
-        if convergenge_threshold is None and nablaRho_threshold is None: 
-            if dx is None or vshock_min is None or rhomean is None: 
+        # Worker MPI ranks skip thresholds — only rank 0 runs find_candidates.
+        _rank, _size = _mpi_rank_size()
+        if _size > 1 and _rank != 0:
+            return
+
+        if convergenge_threshold is None and nablaRho_threshold is None:
+            if dx is None or vshock_min is None or rhomean is None:
                 raise Exception("If you do not directly specify thresholds,   \
                     then you must supply a minimum velocity for the shock     \
                     (vshock_min), the average pre-shock density (rhomean) and \
@@ -250,7 +255,9 @@ class shock_finder(core):
             
         return self.convergenge_threshold, self.nablaRho_threshold
 
-    def find_candidates(self,use_gradTRho = False, dx = None, kB = 1.3806490e-16, mu_mol = 1.2195e0, mh = 1.6605390e-24):
+    def find_candidates(self, use_gradTRho=False, dx=None,
+                        mach_min=1.0, vmag_min=None,
+                        kB=1.3806490e-16, mu_mol=1.2195e0, mh=1.6605390e-24):
         """This function determines shock candidates based on the threshold setter in
             set_threshold.
 
@@ -274,7 +281,9 @@ class shock_finder(core):
                 you must input a dx to compute the pressure gradient runtime.")
             #nablaP=np.gradient(self.P, dx,edge_order=2)
             #nablaP_mag= (nablaP[0]**2 + nablaP[1]**2+nablaP[2]**2)**0.5
-            _log.info("computing dot product between temperature and density gradients...")
+            vmag_info = f", |v| > {vmag_min:.2e} cm/s" if vmag_min is not None else ""
+            _log.info(f"computing dot product between temperature and density gradients "
+                      f"[conv > {self.convergenge_threshold:.2e}, Mach > {mach_min:.1f}{vmag_info}]...")
             T = (mu_mol * mh / kB) * self.P / self.Rho
             gradT    = np.gradient(T, dx,edge_order=2)
             gradTrho = gradT[0]*self.nablaRho[0]+gradT[1]*self.nablaRho[1]+gradT[2]*self.nablaRho[2]      
@@ -286,22 +295,25 @@ class shock_finder(core):
         else:
             gradTrho = None
             mach     = None
-        if 0: 
-            shocks  =  self.find_shocks( conv          = -self.divV,
-                                                        grad          = nablaRho_mag,
-                                                        threshold_grad= self.nablaRho_threshold,
-                                                        conv_threshold= self.convergenge_threshold,
-                                                        Ncells        = 1e5,
-                                                        block         = 1)         
-            x, y, z , _, _=  shocks[0]
+        # if 0: 
+        #     shocks  =  self.find_shocks( conv          = -self.divV,
+        #                                                 grad          = nablaRho_mag,
+        #                                                 threshold_grad= self.nablaRho_threshold,
+        #                                                 conv_threshold= self.convergenge_threshold,
+        #                                                 Ncells        = 1e5,
+        #                                                 block         = 1)         
+        #     x, y, z , _, _=  shocks[0]
             
-        if 1: 
-            shocks  =  self.find_shocks_simple(  conv           =  -self.divV,
+        if 1:
+            shocks  =  self.find_shocks_simple(  conv           = -self.divV,
                                                                 grad           =  self.nablaRho_threshold,
                                                                 conv_threshold = self.convergenge_threshold,
                                                                 grad_threshold = self.nablaRho_threshold,
                                                                 gtgrho         = gradTrho,
-                                                                mach           = mach
+                                                                mach           = mach,
+                                                                mach_min       = mach_min,
+                                                                vmag           = vmag if use_gradTRho else None,
+                                                                vmag_min       = vmag_min,
                                                            )
             x, y, z =  shocks[0] #if not use_gradTRho else shocks[2]
         for i,_ in enumerate(shocks[0][0]):
@@ -363,14 +375,28 @@ class shock_finder(core):
                 else:
                     _log.info(f"C++ serial backend — {n_cands} candidates")
 
+                # Worker ranks skip load_data to save memory.
+                # The C++ MPI layer (mpi_dispatch.cpp) only reads field arrays on
+                # rank 0, then sends sub-arrays via MPI_Send.  Dummies are safe.
+                if _use_mpi and _rank != 0:
+                    _dummy    = np.zeros((1, 1, 1))
+                    _Rho      = _dummy
+                    _P        = _dummy
+                    _B        = [_dummy, _dummy, _dummy]
+                    _V        = [_dummy, _dummy, _dummy]
+                    _divV     = _dummy
+                    _nablaRho = [_dummy, _dummy, _dummy]
+                else:
+                    _Rho      = self.Rho
+                    _P        = self.P
+                    _B        = self.B
+                    _V        = self.V
+                    _divV     = self.divV
+                    _nablaRho = self.nablaRho
+
                 data, header = _cpp.characterise_shocks(
                     self.shock_candidates,
-                    self.Rho,
-                    self.P,
-                    self.B,
-                    self.V,
-                    self.divV,
-                    self.nablaRho,
+                    _Rho, _P, _B, _V, _divV, _nablaRho,
                     self.extra,
                     use_mpi=_use_mpi,
                     quiet=quiet,

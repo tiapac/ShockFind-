@@ -725,8 +725,9 @@ class core:
 
 
     #######################################################################
-    def find_shocks_simple(self, conv, grad, conv_threshold, grad_threshold, 
-                        quiet=False, gtgrho = None, mach=None, ID=''):
+    def find_shocks_simple(self, conv, grad, conv_threshold, grad_threshold,
+                        quiet=False, gtgrho=None, mach=None, mach_min=1.0,
+                        vmag=None, vmag_min=None, ID=''):
         '''
         Function to flag shock candidate cells. Outputs a list of
         coordinates to be used by extract function. This differs
@@ -762,13 +763,16 @@ class core:
         if not quiet:
             print ('*{0:s} Searching down to convergence of {1:.3f}. Then for gradients down to {2:.3f}.'.format(ID, conv_threshold,grad_threshold))
         if gtgrho is not None:
-            output_gtgrho = np.where((gtgrho > 0.0) & (conv > 0.0) & (mach>1.0))#np.logical_and(1 > 0.0, )
-        
+            mask = (gtgrho > 0.0) & (conv > conv_threshold) & (mach > mach_min)
+            if vmag is not None and vmag_min is not None:
+                mask &= (vmag > vmag_min)
+            output_gtgrho = np.where(mask)
+
         output_conv = np.where(conv > conv_threshold)
         output_grad = np.where((grad > grad_threshold) & (conv > 0) & (conv <= conv_threshold))
         if gtgrho is not None:
-            return [output_gtgrho] #[output_conv, output_grad] if gtgrho is None else [output_conv, output_grad, output_gtgrho]
-        else: 
+            return [output_gtgrho]
+        else:
             return [output_conv]
     ##############################################################
 
